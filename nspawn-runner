@@ -12,8 +12,6 @@ import shutil
 
 log = logging.getLogger("nspawn-runner")
 
-WORKDIR = "/var/lib/nspawn-runner"
-
 
 class Fail(RuntimeError):
     """
@@ -43,6 +41,10 @@ class Command:
     def __init__(self, args):
         self.args = args
         self.setup_logging()
+        self.root_dir = "/var/lib/nspawn-runner"
+        self.overlays_dir = os.path.join(self.root_dir, ".overlays")
+        self.gitlab_build_dir = os.path.join(self.root_dir, ".build")
+        self.gitlab_cache_dir = os.path.join(self.root_dir, ".cache")
 
     def setup_logging(self):
         # Setup logging
@@ -76,55 +78,10 @@ class Command:
         return parser
 
 
-class ChrootCreate(Command):
-    """
-    create a chroot that serves as a base for ephemeral machines
-    """
-    NAME = "chroot-create"
-
-    @classmethod
-    def make_subparser(cls, subparsers):
-        parser = super().make_subparser(subparsers)
-        parser.add_argument("--suite", action="store", default="buster",
-                            help="debootstrap suite")
-        parser.add_argument("name", action="store",
-                            help="chroot name")
-        return parser
-
-    def run(self):
-        os.makedirs(WORKDIR, exist_ok=True)
-        chroot_dir = os.path.join(WORKDIR, self.args.name)
-        if os.path.exists(chroot_dir):
-            raise Fail(f"{chroot_dir} already exists")
-        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
-               self.args.suite, chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
-
-
-class ChrootLogin(Command):
-    """
-    create a chroot that serves as a base for ephemeral machines
-    """
-    NAME = "chroot-login"
-
-    @classmethod
-    def make_subparser(cls, subparsers):
-        parser = super().make_subparser(subparsers)
-        parser.add_argument("name", action="store",
-                            help="chroot name")
-        return parser
-
-    def run(self):
-        chroot_dir = os.path.join(WORKDIR, self.args.name)
-        if not os.path.exists(chroot_dir):
-            raise Fail(f"{chroot_dir} does not exist")
-        cmd = ["systemd-nspawn", "--directory", chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
-
-
 class RunMixin:
+    """
+    Common implementation for commands that manage runs
+    """
     @classmethod
     def make_subparser(cls, subparsers):
         default_id = os.environ.get("CUSTOM_ENV_CI_JOB_ID")
@@ -141,12 +98,24 @@ class RunMixin:
             raise Fail("run ID not provided with --id and not found in the environment")
 
         self.machine_name = f"run-{self.args.id}"
-        self.overlay_dir = os.path.join(WORKDIR, ".overlays", self.machine_name)
+        self.overlay_dir = os.path.join(self.overlays_dir, self.machine_name)
 
 
-class Prepare(RunMixin, Command):
+class SetupMixin:
     """
-    start an ephemeral system for a CI run
+    Common implementation for commands that perform setups of chroots or runs
+    """
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        os.makedirs(self.root_dir, exist_ok=True)
+        os.makedirs(self.overlay_dir, exist_ok=True)
+        os.makedirs(self.gitlab_build_dir, exist_ok=True)
+        os.makedirs(self.gitlab_cache_dir, exist_ok=True)
+
+
+class ChrootMixin:
+    """
+    Common implementation for commands that work with a chroot
     """
     @classmethod
     def make_subparser(cls, subparsers):
@@ -155,10 +124,54 @@ class Prepare(RunMixin, Command):
                             help="chroot name")
         return parser
 
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.chroot_dir = os.path.join(self.root_dir, self.args.name)
+
+
+class ChrootCreate(ChrootMixin, SetupMixin, Command):
+    """
+    create a chroot that serves as a base for ephemeral machines
+    """
+    NAME = "chroot-create"
+
+    @classmethod
+    def make_subparser(cls, subparsers):
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("--suite", action="store", default="buster",
+                            help="debootstrap suite")
+        return parser
+
     def run(self):
-        chroot_dir = os.path.join(WORKDIR, self.args.name)
-        if not os.path.exists(chroot_dir):
-            raise Fail(f"{chroot_dir} does not exist")
+        if os.path.exists(self.chroot_dir):
+            raise Fail(f"{self.chroot_dir} already exists")
+        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
+               self.args.suite, self.chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class ChrootLogin(ChrootMixin, Command):
+    """
+    create a chroot that serves as a base for ephemeral machines
+    """
+    NAME = "chroot-login"
+
+    def run(self):
+        if not os.path.exists(self.chroot_dir):
+            raise Fail(f"{self.chroot_dir} does not exist")
+        cmd = ["systemd-nspawn", "--directory", self.chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
+    """
+    start an ephemeral system for a CI run
+    """
+    def run(self):
+        if not os.path.exists(self.chroot_dir):
+            raise Fail(f"{self.chroot_dir} does not exist")
 
         if os.path.exists(self.overlay_dir):
             raise Fail(f"overlay directory {self.overlay_dir} already exists")
@@ -183,8 +196,8 @@ class Prepare(RunMixin, Command):
         cmd.extend(
             ("systemd-nspawn",
                 "--quiet",
-                f"--directory={chroot_dir}",
-                f"--overlay={chroot_dir}:{self.overlay_dir}:/",
+                f"--directory={self.chroot_dir}",
+                f"--overlay={self.chroot_dir}:{self.overlay_dir}:/",
                 f"--machine={self.machine_name}",
                 "--boot",
                 "--notify-ready=yes")
@@ -235,6 +248,51 @@ class Cleanup(RunMixin, Command):
                 shutil.rmtree(self.overlay_dir)
 
 
+class GitlabConfig(Command):
+    """
+    configuration step for gitlab-runner
+    """
+    NAME = "gitlab-config"
+
+    def run(self):
+        # Nothing to do
+        pass
+
+
+class Toml(ChrootMixin, Command):
+    """
+    output the toml configuration for the custom runner
+    """
+    def run(self):
+        argv0 = os.path.abspath(sys.argv[0])
+        print(f'[[runners]]')
+        print(f'  name="{self.args.name}"')
+        print(f'  url="TODO"')
+        print(f'  token="TODO"')
+        print(f'  executor = "custom"')
+        print(f'  builds_dir = "{self.gitlab_build_dir}"')
+        print(f'  cache_dir = "{self.gitlab_cache_dir}"')
+        print(f'  [runners.custom_build_dir]')
+        print(f'  [runners.cache]')
+        print(f'    [runners.cache.s3]')
+        print(f'    [runners.cache.gcs]')
+        print(f'    [runners.cache.azure]')
+        print(f'  [runners.custom]')
+        print(f'    config_exec = "{argv0}"')
+        print(f'    config_args = ["gitlab-config"]')
+        print(f'    config_exec_timeout = 200')
+        print(f'    prepare_exec = "{argv0}"')
+        print(f'    prepare_args = ["prepare", "{self.args.name}"]')
+        print(f'    prepare_exec_timeout = 200')
+        print(f'    run_exec = "{argv0}"')
+        print(f'    run_args = ["run"]')
+        print(f'    cleanup_exec = "{argv0}"')
+        print(f'    cleanup_args = ["cleanup"]')
+        print(f'    cleanup_exec_timeout = 200')
+        print(f'    graceful_kill_timeout = 200')
+        print(f'    force_kill_timeout = 200')
+
+
 def main():
     parser = argparse.ArgumentParser(description="Manage systemd-nspawn machines for CI runs.")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
@@ -246,6 +304,8 @@ def main():
     Prepare.make_subparser(subparsers)
     Run.make_subparser(subparsers)
     Cleanup.make_subparser(subparsers)
+    GitlabConfig.make_subparser(subparsers)
+    Toml.make_subparser(subparsers)
 
     args = parser.parse_args()
     handler = args.handler(args)
