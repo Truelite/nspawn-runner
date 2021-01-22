@@ -108,7 +108,7 @@ class SetupMixin:
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
         os.makedirs(self.root_dir, exist_ok=True)
-        os.makedirs(self.overlay_dir, exist_ok=True)
+        os.makedirs(self.overlays_dir, exist_ok=True)
         os.makedirs(self.gitlab_build_dir, exist_ok=True)
         os.makedirs(self.gitlab_cache_dir, exist_ok=True)
 
