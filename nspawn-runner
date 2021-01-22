@@ -209,7 +209,7 @@ class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
 
 class Run(RunMixin, Command):
     """
-    start an ephemeral system for a CI run
+    run a command inside a CI machine
     """
     @classmethod
     def make_subparser(cls, subparsers):
@@ -238,7 +238,7 @@ class Run(RunMixin, Command):
 
 class Cleanup(RunMixin, Command):
     """
-    start an ephemeral system for a CI run
+    cleanup a CI machine after it's run
     """
     def run(self):
         try:

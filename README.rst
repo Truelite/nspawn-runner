@@ -23,11 +23,10 @@ Command line summary::
                           sub-command help
       chroot-create       create a chroot that serves as a base for ephemeral
                           machines
-      chroot-login        create a chroot that serves as a base for ephemeral
-                          machines
+      chroot-login        enter the chroot to perform maintenance
       prepare             start an ephemeral system for a CI run
-      run                 start an ephemeral system for a CI run
-      cleanup             start an ephemeral system for a CI run
+      run                 run a command inside a CI machine
+      cleanup             cleanup a CI machine after it's run
       gitlab-config       configuration step for gitlab-runner
       toml                output the toml configuration for the custom runner
   
