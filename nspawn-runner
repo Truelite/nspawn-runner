@@ -153,7 +153,7 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
 
 class ChrootLogin(ChrootMixin, Command):
     """
-    create a chroot that serves as a base for ephemeral machines
+    enter the chroot to perform maintenance
     """
     NAME = "chroot-login"
 
