@@ -218,6 +218,8 @@ class Run(RunMixin, Command):
                             help="shell to use to run the script. Default: $(default)s")
         parser.add_argument("script", action="store",
                             help="script to run")
+        parser.add_argument("description", action="store", nargs="?",
+                            help="optional description for this script")
         return parser
 
     def run(self):
