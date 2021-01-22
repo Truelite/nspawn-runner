@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+
+from __future__ import annotations
+from typing import Optional
+import argparse
+import logging
+import subprocess
+import os
+import sys
+import shlex
+import shutil
+
+log = logging.getLogger("nspawn-runner")
+
+WORKDIR = "/var/lib/nspawn-runner"
+
+
+class Fail(RuntimeError):
+    """
+    Exception raised when the program should exit with an error but without a
+    backtrace
+    """
+    pass
+
+
+class Success(Exception):
+    """
+    Exception raised when a command has been successfully handled, and no
+    further processing should happen
+    """
+    pass
+
+
+class Command:
+    # Command name (as used in command line)
+    # Defaults to the lowercased class name
+    NAME: Optional[str] = None
+
+    # Command description (as used in command line help)
+    # Defaults to the strip()ped class docstring.
+    DESC: Optional[str] = None
+
+    def __init__(self, args):
+        self.args = args
+        self.setup_logging()
+
+    def setup_logging(self):
+        # Setup logging
+        FORMAT = "%(asctime)-15s %(levelname)s %(message)s"
+        log_handler = logging.StreamHandler(sys.stderr)
+        log_handler.setFormatter(logging.Formatter(FORMAT))
+        if self.args.debug:
+            log_handler.setLevel(logging.DEBUG)
+        elif self.args.verbose:
+            log_handler.setLevel(logging.INFO)
+        else:
+            log_handler.setLevel(logging.WARN)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_handler)
+        root_logger.setLevel(logging.DEBUG)
+
+    @classmethod
+    def get_name(cls):
+        if cls.NAME is not None:
+            return cls.NAME
+        return cls.__name__.lower()
+
+    @classmethod
+    def make_subparser(cls, subparsers):
+        desc = cls.DESC
+        if desc is None:
+            desc = cls.__doc__.strip()
+
+        parser = subparsers.add_parser(cls.get_name(), help=desc)
+        parser.set_defaults(handler=cls)
+        return parser
+
+
+class ChrootCreate(Command):
+    """
+    create a chroot that serves as a base for ephemeral machines
+    """
+    NAME = "chroot-create"
+
+    @classmethod
+    def make_subparser(cls, subparsers):
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("--suite", action="store", default="buster",
+                            help="debootstrap suite")
+        parser.add_argument("name", action="store",
+                            help="chroot name")
+        return parser
+
+    def run(self):
+        os.makedirs(WORKDIR, exist_ok=True)
+        chroot_dir = os.path.join(WORKDIR, self.args.name)
+        if os.path.exists(chroot_dir):
+            raise Fail(f"{chroot_dir} already exists")
+        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
+               self.args.suite, chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class ChrootLogin(Command):
+    """
+    create a chroot that serves as a base for ephemeral machines
+    """
+    NAME = "chroot-login"
+
+    @classmethod
+    def make_subparser(cls, subparsers):
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("name", action="store",
+                            help="chroot name")
+        return parser
+
+    def run(self):
+        chroot_dir = os.path.join(WORKDIR, self.args.name)
+        if not os.path.exists(chroot_dir):
+            raise Fail(f"{chroot_dir} does not exist")
+        cmd = ["systemd-nspawn", "--directory", chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class RunMixin:
+    @classmethod
+    def make_subparser(cls, subparsers):
+        default_id = os.environ.get("CUSTOM_ENV_CI_JOB_ID")
+
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("--id", action="store", default=default_id,
+                            help="ID for this CI run. Default: taken from $CUSTOM_ENV_CI_JOB_ID")
+        return parser
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+
+        if self.args.id is None:
+            raise Fail("run ID not provided with --id and not found in the environment")
+
+        self.machine_name = f"run-{self.args.id}"
+        self.overlay_dir = os.path.join(WORKDIR, ".overlays", self.machine_name)
+
+
+class Prepare(RunMixin, Command):
+    """
+    start an ephemeral system for a CI run
+    """
+    @classmethod
+    def make_subparser(cls, subparsers):
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("name", action="store",
+                            help="chroot name")
+        return parser
+
+    def run(self):
+        chroot_dir = os.path.join(WORKDIR, self.args.name)
+        if not os.path.exists(chroot_dir):
+            raise Fail(f"{chroot_dir} does not exist")
+
+        if os.path.exists(self.overlay_dir):
+            raise Fail(f"overlay directory {self.overlay_dir} already exists")
+        os.makedirs(self.overlay_dir, exist_ok=True)
+
+        unit_config = [
+            'KillMode=mixed',
+            'Type=notify',
+            'RestartForceExitStatus=133',
+            'SuccessExitStatus=133',
+            'Slice=machine.slice',
+            'Delegate=yes',
+            'TasksMax=16384',
+            'WatchdogSec=3min',
+        ]
+
+        cmd = ["systemd-run"]
+        for c in unit_config:
+            cmd.append("-p")
+            cmd.append(c)
+
+        cmd.extend(
+            ("systemd-nspawn",
+                "--quiet",
+                f"--directory={chroot_dir}",
+                f"--overlay={chroot_dir}:{self.overlay_dir}:/",
+                f"--machine={self.machine_name}",
+                "--boot",
+                "--notify-ready=yes")
+        )
+
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class Run(RunMixin, Command):
+    """
+    start an ephemeral system for a CI run
+    """
+    @classmethod
+    def make_subparser(cls, subparsers):
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("--shell", action="store", default="/bin/bash",
+                            help="shell to use to run the script. Default: $(default)s")
+        parser.add_argument("script", action="store",
+                            help="script to run")
+        return parser
+
+    def run(self):
+        cmd = [
+            "systemd-run", "--quiet", "--pipe", "--wait",
+            f"--machine={self.machine_name}", self.args.shell
+        ]
+
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        with open(self.args.script, "rb") as fd:
+            res = subprocess.run(cmd, stdin=fd)
+
+        if res.returncode != 0:
+            raise Fail(f"Run script exited with code {res.returncode}")
+
+
+class Cleanup(RunMixin, Command):
+    """
+    start an ephemeral system for a CI run
+    """
+    def run(self):
+        try:
+            res = subprocess.run(["machinectl", "stop", self.machine_name])
+            if res.returncode != 0:
+                raise Fail(f"Run script exited with code {res.returncode}")
+        finally:
+            if os.path.exists(self.overlay_dir):
+                shutil.rmtree(self.overlay_dir)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Manage systemd-nspawn machines for CI runs.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
+    parser.add_argument("--debug", action="store_true", help="verbose output")
+    subparsers = parser.add_subparsers(help="sub-command help", dest="command")
+
+    ChrootCreate.make_subparser(subparsers)
+    ChrootLogin.make_subparser(subparsers)
+    Prepare.make_subparser(subparsers)
+    Run.make_subparser(subparsers)
+    Cleanup.make_subparser(subparsers)
+
+    args = parser.parse_args()
+    handler = args.handler(args)
+
+    res = handler.run()
+    if res is not None:
+        sys.exit(res)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Fail as e:
+        print(e, file=sys.stderr)
+        # Use $SYSTEM_FAILURE_EXIT_CODE as exit code if provided
+        exit_code = int(os.environ.get("SYSTEM_FAILURE_EXIT_CODE", 1))
+        sys.exit(exit_code)
+    except Success:
+        pass
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        # Use $SYSTEM_FAILURE_EXIT_CODE as exit code if provided
+        exit_code = int(os.environ.get("SYSTEM_FAILURE_EXIT_CODE", 1))
+        sys.exit(exit_code)
