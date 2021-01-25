@@ -120,13 +120,26 @@ class ChrootMixin:
     @classmethod
     def make_subparser(cls, subparsers):
         parser = super().make_subparser(subparsers)
-        parser.add_argument("name", action="store",
-                            help="chroot name")
+        parser.add_argument("image", action="store", nargs="?",
+                            help="chroot name (default: taken from $CUSTOM_ENV_CI_JOB_IMAGE")
+        parser.add_argument("--default-image", action="store",
+                            help="chroot name when image is not passed and $CUSTOM_ENV_CI_JOB_IMAGE is not set")
         return parser
 
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
-        self.chroot_dir = os.path.join(self.root_dir, self.args.name)
+        image = self.args.image
+        if image is None:
+            image = os.environ.get("CUSTOM_ENV_CI_JOB_IMAGE")
+        if image is None:
+            raise Fail("Please provide --image or set $CUSTOM_ENV_CI_JOB_IMAGE")
+        if image is None:
+            image = self.args.default_image
+        image = os.path.basename(image)
+        if image.startswith("."):
+            raise Fail("Image names cannot start with '.'")
+        self.image_name = image
+        self.chroot_dir = os.path.join(self.root_dir, image)
 
 
 class ChrootCreate(ChrootMixin, SetupMixin, Command):
@@ -170,8 +183,10 @@ class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
     start an ephemeral system for a CI run
     """
     def run(self):
+        log.info("Starting machine using image %s", self.image_name)
         if not os.path.exists(self.chroot_dir):
-            raise Fail(f"{self.chroot_dir} does not exist")
+            available = sorted(x for x in os.listdir(self.root_dir) if not x.startswith("."))
+            raise Fail(f"{self.chroot_dir} does not exist. Use one of {', '.join(available)}")
 
         if os.path.exists(self.overlay_dir):
             raise Fail(f"overlay directory {self.overlay_dir} already exists")
@@ -261,14 +276,14 @@ class GitlabConfig(Command):
         pass
 
 
-class Toml(ChrootMixin, Command):
+class Toml(Command):
     """
     output the toml configuration for the custom runner
     """
     def run(self):
         argv0 = os.path.abspath(sys.argv[0])
         print(f'[[runners]]')
-        print(f'  name="{self.args.name}"')
+        print(f'  name="nspawn-runner"')
         print(f'  url="TODO"')
         print(f'  token="TODO"')
         print(f'  executor = "custom"')
@@ -284,7 +299,7 @@ class Toml(ChrootMixin, Command):
         print(f'    config_args = ["gitlab-config"]')
         print(f'    config_exec_timeout = 200')
         print(f'    prepare_exec = "{argv0}"')
-        print(f'    prepare_args = ["prepare", "{self.args.name}"]')
+        print(f'    prepare_args = ["prepare"]')
         print(f'    prepare_exec_timeout = 200')
         print(f'    run_exec = "{argv0}"')
         print(f'    run_args = ["run"]')
