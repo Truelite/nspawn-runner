@@ -132,9 +132,9 @@ class ChrootMixin:
         if image is None:
             image = os.environ.get("CUSTOM_ENV_CI_JOB_IMAGE")
         if image is None:
-            raise Fail("Please provide --image or set $CUSTOM_ENV_CI_JOB_IMAGE")
-        if image is None:
             image = self.args.default_image
+        if image is None:
+            raise Fail("Please provide --image or set $CUSTOM_ENV_CI_JOB_IMAGE")
         image = os.path.basename(image)
         if image.startswith("."):
             raise Fail("Image names cannot start with '.'")
