@@ -257,7 +257,7 @@ class Cleanup(RunMixin, Command):
     """
     def run(self):
         try:
-            res = subprocess.run(["machinectl", "stop", self.machine_name])
+            res = subprocess.run(["machinectl", "terminate", self.machine_name])
             if res.returncode != 0:
                 raise Fail(f"Run script exited with code {res.returncode}")
         finally:
