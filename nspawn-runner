@@ -29,6 +29,263 @@ class Success(Exception):
     pass
 
 
+#
+# Backend implementation
+#
+
+class NspawnRunner:
+    """
+    Common nspawn-runner implementation, subclassed for traditional filesystem
+    and btrfs filesystems
+    """
+    def __init__(self, root_dir: str):
+        self.root_dir = root_dir
+        self.gitlab_build_dir = os.path.join(self.root_dir, ".build")
+        self.gitlab_cache_dir = os.path.join(self.root_dir, ".cache")
+
+    @classmethod
+    def create(cls, root_dir: str):
+        """
+        Instantiate the right NspawnRunner subclass for this sytem
+        """
+        # Detect filesystem type
+        res = subprocess.run(
+                ["stat", "-f", "-c", "%T", root_dir],
+                check=True, text=True, stdout=subprocess.PIPE)
+        fstype = res.stdout.strip()
+        if fstype == "btrfs":
+            # return BtrfsRunner(root_dir)
+            return OverlayRunner(root_dir)
+        else:
+            return OverlayRunner(root_dir)
+
+    def setup(self):
+        """
+        Make sure all needed work directories exist
+        """
+        os.makedirs(self.root_dir, exist_ok=True)
+        os.makedirs(self.gitlab_build_dir, exist_ok=True)
+        os.makedirs(self.gitlab_cache_dir, exist_ok=True)
+
+    def get_machine(self, run_id: str) -> "Machine":
+        """
+        Create a Machine object to manage a CI run
+        """
+        raise NotImplementedError(f"{self.__class__.__name__}.get_machine not implemented")
+
+    def get_chroot(self, image_name: str) -> "Chroot":
+        """
+        Create a Run object to manage a CI chroot
+        """
+        raise NotImplementedError(f"{self.__class__.__name__}.get_chroot not implemented")
+
+
+class Machine:
+    """
+    Manage a CI machine
+    """
+    def __init__(self, nspawn_runner: NspawnRunner, run_id: str):
+        self.nspawn_runner = nspawn_runner
+        self.run_id = run_id
+        self.machine_name = f"run-{self.run_id}"
+
+    def start(self, chroot: "Chroot"):
+        """
+        Start this machine on the given chroot
+
+        The last start command is run with exec, so this function, when
+        successful, never returns and destroys the calling process
+        """
+        raise NotImplementedError(f"{self.__class__.__name__}.start not implemented")
+
+    def run(self, shell: str, script: str):
+        """
+        Run the given script inside the machine, using the given shell
+
+        The last command is run with exec, so this function, when
+        successful, never returns and destroys the calling process
+        """
+        raise NotImplementedError(f"{self.__class__.__name__}.run not implemented")
+
+    def terminate(self):
+        """
+        Terminate this machine
+        """
+        raise NotImplementedError(f"{self.__class__.__name__}.terminate not implemented")
+
+
+class OverlayMachine(Machine):
+    """
+    Machine implemenation for traditional filesystems
+    """
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.overlay_dir = os.path.join(self.nspawn_runner.overlays_dir, self.machine_name)
+
+    def start(self, chroot: "Chroot"):
+        log.info("Starting machine using image %s", chroot.image_name)
+        if os.path.exists(self.overlay_dir):
+            raise Fail(f"overlay directory {self.overlay_dir} already exists")
+        os.makedirs(self.overlay_dir, exist_ok=True)
+
+        unit_config = [
+            'KillMode=mixed',
+            'Type=notify',
+            'RestartForceExitStatus=133',
+            'SuccessExitStatus=133',
+            'Slice=machine.slice',
+            'Delegate=yes',
+            'TasksMax=16384',
+            'WatchdogSec=3min',
+        ]
+
+        cmd = ["systemd-run"]
+        for c in unit_config:
+            cmd.append("-p")
+            cmd.append(c)
+
+        cmd.extend(
+            ("systemd-nspawn",
+                "--quiet",
+                f"--directory={chroot.chroot_dir}",
+                f"--overlay={chroot.chroot_dir}:{self.overlay_dir}:/",
+                f"--machine={self.machine_name}",
+                "--boot",
+                "--notify-ready=yes")
+        )
+
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+    def run(self, shell: str, script: str):
+        cmd = [
+            "systemd-run", "--quiet", "--pipe", "--wait",
+            f"--machine={self.machine_name}", shell
+        ]
+
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        with open(script, "rb") as fd:
+            res = subprocess.run(cmd, stdin=fd)
+
+        if res.returncode != 0:
+            raise Fail(f"Run script exited with code {res.returncode}")
+
+    def terminate(self):
+        try:
+            res = subprocess.run(["machinectl", "terminate", self.machine_name])
+            if res.returncode != 0:
+                raise Fail(f"Run script exited with code {res.returncode}")
+        finally:
+            if os.path.exists(self.overlay_dir):
+                shutil.rmtree(self.overlay_dir)
+
+
+class BtrfsMachine(Machine):
+    """
+    Machine implementation for btrfs fileystems
+    """
+
+
+class Chroot:
+    """
+    Manage a CI chroot
+    """
+    def __init__(self, nspawn_runner: NspawnRunner, image_name: str):
+        self.nspawn_runner = nspawn_runner
+        self.image_name = image_name
+        self.chroot_dir = os.path.join(nspawn_runner.root_dir, self.image_name)
+
+    def must_exist(self):
+        """
+        Raise Fail if the chroot does not already exist
+        """
+        if not os.path.exists(self.chroot_dir):
+            available = sorted(x for x in os.listdir(self.root_dir) if not x.startswith("."))
+            raise Fail(f"{self.chroot_dir} does not exist. Use one of {', '.join(available)}")
+
+    def must_not_exist(self):
+        """
+        Raise Fail if the chroot does already exists
+        """
+        if os.path.exists(self.chroot_dir):
+            raise Fail(f"{self.chroot_dir} already exists")
+
+    def create(self, suite: str):
+        """
+        Create a new chroot.
+
+        The last creation command is run with exec, so this function, when
+        successful, never returns and destroys the calling process
+        """
+        raise NotImplementedError(f"{self.__class__.__name__}.create not implemented")
+
+    def maintenance_login(self):
+        """
+        Directly log into the chroot, without an ephemeral layer.
+
+        This can be used to perform maintenance on the chroot.
+
+        Login is done with exec, so this function, when successful, never
+        returns and destroys the calling process
+        """
+        cmd = ["systemd-nspawn", "--directory", self.chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class OverlayChroot(Chroot):
+    """
+    Chroot implemenation for traditional filesystems
+    """
+    def create(self, suite: str):
+        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
+               suite, self.chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
+
+
+class BtrfsChroot(Chroot):
+    """
+    Chroot implementation for btrfs fileystems
+    """
+
+
+class OverlayRunner(NspawnRunner):
+    """
+    nspawn-runner implementation that runs on traditional filesystem, using
+    overlay mounts
+    """
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        self.overlays_dir = os.path.join(self.root_dir, ".overlays")
+
+    def setup(self):
+        super().setup()
+        os.makedirs(self.overlays_dir, exist_ok=True)
+
+    def get_machine(self, run_id: str) -> "Machine":
+        return OverlayMachine(self, run_id)
+
+    def get_chroot(self, image_name: str) -> "Chroot":
+        return OverlayChroot(self, image_name)
+
+
+class BtrfsRunner(NspawnRunner):
+    """
+    nspawn-runner implementation optimized for btrfs filesystems
+    """
+    def get_machine(self, run_id: str) -> "Machine":
+        return BtrfsMachine(self, run_id)
+
+    def get_chroot(self, image_name: str) -> "Chroot":
+        return BtrfsChroot(self, image_name)
+
+
+
+#
+# Command line front-end
+#
+
 class Command:
     # Command name (as used in command line)
     # Defaults to the lowercased class name
@@ -41,10 +298,7 @@ class Command:
     def __init__(self, args):
         self.args = args
         self.setup_logging()
-        self.root_dir = "/var/lib/nspawn-runner"
-        self.overlays_dir = os.path.join(self.root_dir, ".overlays")
-        self.gitlab_build_dir = os.path.join(self.root_dir, ".build")
-        self.gitlab_cache_dir = os.path.join(self.root_dir, ".cache")
+        self.nspawn_runner = NspawnRunner.create("/var/lib/nspawn-runner")
 
     def setup_logging(self):
         # Setup logging
@@ -97,8 +351,7 @@ class RunMixin:
         if self.args.id is None:
             raise Fail("run ID not provided with --id and not found in the environment")
 
-        self.machine_name = f"run-{self.args.id}"
-        self.overlay_dir = os.path.join(self.overlays_dir, self.machine_name)
+        self.machine = self.nspawn_runner.get_machine(self.args.id)
 
 
 class SetupMixin:
@@ -107,10 +360,7 @@ class SetupMixin:
     """
     def __init__(self, *args, **kw):
         super().__init__(*args, **kw)
-        os.makedirs(self.root_dir, exist_ok=True)
-        os.makedirs(self.overlays_dir, exist_ok=True)
-        os.makedirs(self.gitlab_build_dir, exist_ok=True)
-        os.makedirs(self.gitlab_cache_dir, exist_ok=True)
+        self.nspawn_runner.setup()
 
 
 class ChrootMixin:
@@ -134,12 +384,12 @@ class ChrootMixin:
         if image is None:
             image = self.args.default_image
         if image is None:
-            raise Fail("Please provide --image or set $CUSTOM_ENV_CI_JOB_IMAGE")
+            raise Fail("Please provide an image name, or set $CUSTOM_ENV_CI_JOB_IMAGE")
         image = os.path.basename(image)
         if image.startswith("."):
             raise Fail("Image names cannot start with '.'")
-        self.image_name = image
-        self.chroot_dir = os.path.join(self.root_dir, image)
+
+        self.chroot = self.nspawn_runner.get_chroot(image)
 
 
 class ChrootCreate(ChrootMixin, SetupMixin, Command):
@@ -156,12 +406,8 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
         return parser
 
     def run(self):
-        if os.path.exists(self.chroot_dir):
-            raise Fail(f"{self.chroot_dir} already exists")
-        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
-               self.args.suite, self.chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
+        self.chroot.must_not_exist()
+        self.chroot.create(self.args.suite)
 
 
 class ChrootLogin(ChrootMixin, Command):
@@ -171,11 +417,8 @@ class ChrootLogin(ChrootMixin, Command):
     NAME = "chroot-login"
 
     def run(self):
-        if not os.path.exists(self.chroot_dir):
-            raise Fail(f"{self.chroot_dir} does not exist")
-        cmd = ["systemd-nspawn", "--directory", self.chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
+        self.chroot.must_exist()
+        self.chroot.maintenance_login()
 
 
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
@@ -183,43 +426,8 @@ class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
     start an ephemeral system for a CI run
     """
     def run(self):
-        log.info("Starting machine using image %s", self.image_name)
-        if not os.path.exists(self.chroot_dir):
-            available = sorted(x for x in os.listdir(self.root_dir) if not x.startswith("."))
-            raise Fail(f"{self.chroot_dir} does not exist. Use one of {', '.join(available)}")
-
-        if os.path.exists(self.overlay_dir):
-            raise Fail(f"overlay directory {self.overlay_dir} already exists")
-        os.makedirs(self.overlay_dir, exist_ok=True)
-
-        unit_config = [
-            'KillMode=mixed',
-            'Type=notify',
-            'RestartForceExitStatus=133',
-            'SuccessExitStatus=133',
-            'Slice=machine.slice',
-            'Delegate=yes',
-            'TasksMax=16384',
-            'WatchdogSec=3min',
-        ]
-
-        cmd = ["systemd-run"]
-        for c in unit_config:
-            cmd.append("-p")
-            cmd.append(c)
-
-        cmd.extend(
-            ("systemd-nspawn",
-                "--quiet",
-                f"--directory={self.chroot_dir}",
-                f"--overlay={self.chroot_dir}:{self.overlay_dir}:/",
-                f"--machine={self.machine_name}",
-                "--boot",
-                "--notify-ready=yes")
-        )
-
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
+        self.chroot.must_exist()
+        self.machine.start(self.chroot)
 
 
 class Run(RunMixin, Command):
@@ -238,17 +446,7 @@ class Run(RunMixin, Command):
         return parser
 
     def run(self):
-        cmd = [
-            "systemd-run", "--quiet", "--pipe", "--wait",
-            f"--machine={self.machine_name}", self.args.shell
-        ]
-
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        with open(self.args.script, "rb") as fd:
-            res = subprocess.run(cmd, stdin=fd)
-
-        if res.returncode != 0:
-            raise Fail(f"Run script exited with code {res.returncode}")
+        self.machine.run(self.args.shell, self.args.script)
 
 
 class Cleanup(RunMixin, Command):
@@ -256,13 +454,7 @@ class Cleanup(RunMixin, Command):
     cleanup a CI machine after it's run
     """
     def run(self):
-        try:
-            res = subprocess.run(["machinectl", "terminate", self.machine_name])
-            if res.returncode != 0:
-                raise Fail(f"Run script exited with code {res.returncode}")
-        finally:
-            if os.path.exists(self.overlay_dir):
-                shutil.rmtree(self.overlay_dir)
+        self.machine.terminate()
 
 
 class GitlabConfig(Command):
