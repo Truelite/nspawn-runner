@@ -270,6 +270,16 @@ class BtrfsChroot(Chroot):
     """
     Chroot implementation for btrfs fileystems
     """
+    def create(self, suite: str):
+        # Create subvolume for chroot
+        cmd = ["btrfs", "subvolume", "create", self.chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        subprocess.run(cmd, check=True)
+
+        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
+               suite, self.chroot_dir]
+        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+        os.execvp(cmd[0], cmd)
 
 
 class OverlayRunner(NspawnRunner):
