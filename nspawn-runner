@@ -5,6 +5,8 @@ from typing import Optional, List
 import argparse
 import logging
 import subprocess
+import tempfile
+import json
 import os
 import sys
 import shlex
@@ -39,6 +41,7 @@ class NspawnRunner:
     and btrfs filesystems
     """
     def __init__(self, root_dir: str):
+        self.src_dir = os.path.abspath(os.path.dirname(sys.argv[0]))
         self.root_dir = root_dir
         self.gitlab_build_dir = os.path.join(self.root_dir, ".build")
         self.gitlab_cache_dir = os.path.join(self.root_dir, ".cache")
@@ -313,7 +316,6 @@ class BtrfsRunner(NspawnRunner):
         return BtrfsChroot(self, image_name)
 
 
-
 #
 # Command line front-end
 #
@@ -453,6 +455,67 @@ class ChrootLogin(ChrootMixin, Command):
         self.chroot.maintenance_login()
 
 
+class ChrootMaintenance(Command):
+    """
+    perform routine maintenance of chroots
+    """
+    NAME = "chroot-maintenance"
+
+    def run(self):
+        # List chroots in /var/lib/nspawn-runner/
+        # that have a corresponding playbook
+        playbooks = []
+        for fn in os.scandir(self.nspawn_runner.root_dir):
+            if not fn.is_dir():
+                continue
+            for ext in ("yaml", "yml"):
+                playbook = os.path.join(self.nspawn_runner.src_dir, f"{fn.name}.{ext}")
+                if os.path.exists(playbook):
+                    playbooks.append((fn.name, fn.path, playbook))
+                    break
+
+        with tempfile.TemporaryDirectory() as workdir:
+            # Write the chroot hack script
+            # See https://www.enricozini.org/blog/2021/debian/nspawn-chroot-maintenance
+            chroot_cmd = os.path.join(workdir, "nspawn-chroot")
+            with open(chroot_cmd, "wt") as fd:
+                print('#!/bin/sh', file=fd)
+                print('chroot="$1"', file=fd)
+                print('shift', file=fd)
+                print('exec systemd-nspawn --console=pipe -qD "$chroot" -- "$@"', file=fd)
+                os.fchmod(fd.fileno(), 0o755)
+
+            # Write an ansible configuration
+            inventory_fname = os.path.join(workdir, "hosts")
+            config_fname = os.path.join(workdir, "config.ini")
+            with open(config_fname, "wt") as fd:
+                print("[defaults]", file=fd)
+                print("nocows = 1", file=fd)
+                print(f"inventory = {inventory_fname}", file=fd)
+
+            # Run each playbook on its chroot
+            for name, chroot, playbook in playbooks:
+                # Write an ansible inventory for this host only
+                with open(inventory_fname, "wt") as fd:
+                    json.dump({
+                        "all": {
+                            "hosts": {
+                                chroot: {
+                                    "ansible_connection": "chroot",
+                                    "ansible_chroot_exe": chroot_cmd,
+                                }
+                            }
+                        }
+                    }, fd, indent=1)
+
+                # Run the playbook
+                env = dict(os.environ)
+                env["ANSIBLE_CONFIG"] = config_fname
+                subprocess.run([
+                    "ansible-playbook", playbook
+                ], check=True, env=env)
+
+
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
     """
     start an ephemeral system for a CI run
@@ -542,6 +605,7 @@ def main():
 
     ChrootCreate.make_subparser(subparsers)
     ChrootLogin.make_subparser(subparsers)
+    ChrootMaintenance.make_subparser(subparsers)
     Prepare.make_subparser(subparsers)
     Run.make_subparser(subparsers)
     Cleanup.make_subparser(subparsers)
