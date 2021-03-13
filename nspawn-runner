@@ -523,7 +523,7 @@ class Toml(Command):
         print(f'    config_args = ["gitlab-config"]')
         print(f'    config_exec_timeout = 200')
         print(f'    prepare_exec = "{argv0}"')
-        print(f'    prepare_args = ["prepare"]')
+        print(f'    prepare_args = ["--verbose", "prepare", "--default-image=buster"]')
         print(f'    prepare_exec_timeout = 200')
         print(f'    run_exec = "{argv0}"')
         print(f'    run_args = ["run"]')
