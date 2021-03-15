@@ -53,6 +53,48 @@ of your own.
 __ https://docs.gitlab.com/runner/executors/custom.html
 
 
+High level chroot configuration
+===============================
+
+Instead of running ``nspawn-runner chroot-create``, you can define a chroot
+through an ansible playbook placed in ``/etc/nspawn-runner/`` or
+``/var/lib/nspawn-runner``.
+
+The name of the playbook, without extension, will be used for the chroot image
+name, and made available to ``gitlab-runner``.
+
+``nspawn-runner`` can parse ``vars:`` from the first element in the playbook
+(see issue #3), and read configuration from variables starting with
+``nspawn_runner_``: this allows to configure chroot creation and layout in a
+single place. Currently supported are:
+
+* ``nspawn_runner_chroot_suite``: suite to use for debootstrap
+
+If ``nspawn-runner chroot-create`` finds a matching playbook, it will get
+creation defaults from it, and run the playbook to customize the chroot after
+creation.
+
+You can use ``nspawn-runner chroot-maintenance`` to run all playbooks on all
+chroots. It will also chreate chroots if they don't exist in the file system.
+You can schedule it to run periodically, to keep chroots up to date.
+
+This also means that you can provision a new gitlab runner by copying over just
+the ``.yaml`` files and running ``nspawn-runner chroot-maintenance`` once.
+
+
+Dependencies
+============
+
+``PyYaml`` or ``ruamel.yaml`` are needed to parse playbooks.
+
+``eatmydata`` is an optional dependency: if found, it is used to speed up image
+creation.
+
+``btrfs`` is an optional dependency: if ``/var/lib/nspawn-runner`` is on btrfs,
+chroots are created as subvolumes, and running CIs will use
+``systemd-nspawn``'s ``--ephemeral`` feature.
+
+
 Copyright
 =========
 
