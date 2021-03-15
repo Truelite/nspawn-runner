@@ -258,9 +258,6 @@ class Chroot:
     def create(self, suite: str):
         """
         Create a new chroot.
-
-        The last creation command is run with exec, so this function, when
-        successful, never returns and destroys the calling process
         """
         raise NotImplementedError(f"{self.__class__.__name__}.create not implemented")
 
@@ -387,7 +384,7 @@ class OverlayChroot(Chroot):
         cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
                suite, self.chroot_dir]
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
+        subprocess.run(cmd, check=True)
 
 
 class BtrfsChroot(Chroot):
@@ -403,7 +400,7 @@ class BtrfsChroot(Chroot):
         cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
                suite, self.chroot_dir]
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        os.execvp(cmd[0], cmd)
+        subprocess.run(cmd, check=True)
 
 
 class OverlayRunner(NspawnRunner):
@@ -570,6 +567,9 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
         if suite is None:
             suite = FALLBACK_SUITE
         self.chroot.create(suite)
+        playbook = self.chroot.config_file_path()
+        if playbook is not None:
+            self.chroot.run_playbook(playbook)
 
 
 class ChrootLogin(ChrootMixin, Command):
