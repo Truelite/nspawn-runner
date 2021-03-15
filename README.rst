@@ -64,9 +64,11 @@ The name of the playbook, without extension, will be used for the chroot image
 name, and made available to ``gitlab-runner``.
 
 ``nspawn-runner`` can parse ``vars:`` from the first element in the playbook
-(see issue #3), and read configuration from variables starting with
+(see `issue #3`__), and read configuration from variables starting with
 ``nspawn_runner_``: this allows to configure chroot creation and layout in a
 single place. Currently supported are:
+
+__ https://github.com/Truelite/nspawn-runner/issues/3
 
 * ``nspawn_runner_chroot_suite``: suite to use for debootstrap
 
