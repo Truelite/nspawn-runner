@@ -257,6 +257,19 @@ class Chroot:
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
         os.execvp(cmd[0], cmd)
 
+    def config_file_path(self):
+        """
+        Return the path of the YAML playbook/config file for this chroot.
+
+        Return None if not configuration was found
+        """
+        for cfgdir in ("/etc/nsspawn-runner", self.nspawn_runner.root_dir):
+            for ext in ("yaml", "yml"):
+                playbook = os.path.join(cfgdir, f"{self.image_name}.{ext}")
+                if os.path.exists(playbook):
+                    return playbook
+        return None
+
 
 class OverlayChroot(Chroot):
     """
@@ -466,13 +479,16 @@ class ChrootMaintenance(Command):
         # that have a corresponding playbook
         playbooks = []
         for fn in os.scandir(self.nspawn_runner.root_dir):
+            if fn.name.startswith("."):
+                continue
             if not fn.is_dir():
                 continue
-            for ext in ("yaml", "yml"):
-                playbook = os.path.join(self.nspawn_runner.src_dir, f"{fn.name}.{ext}")
-                if os.path.exists(playbook):
-                    playbooks.append((fn.name, fn.path, playbook))
-                    break
+            chroot = self.nspawn_runner.get_chroot(fn.name)
+            playbook = chroot.config_file_path()
+            if playbook is not None:
+                playbooks.append((chroot, playbook))
+            else:
+                log.debug("%s: no config/playbook file found", fn.name)
 
         with tempfile.TemporaryDirectory() as workdir:
             # Write the chroot hack script
@@ -494,13 +510,13 @@ class ChrootMaintenance(Command):
                 print(f"inventory = {inventory_fname}", file=fd)
 
             # Run each playbook on its chroot
-            for name, chroot, playbook in playbooks:
+            for chroot, playbook in playbooks:
                 # Write an ansible inventory for this host only
                 with open(inventory_fname, "wt") as fd:
                     json.dump({
                         "all": {
                             "hosts": {
-                                chroot: {
+                                chroot.chroot_dir: {
                                     "ansible_connection": "chroot",
                                     "ansible_chroot_exe": chroot_cmd,
                                 }
@@ -511,9 +527,9 @@ class ChrootMaintenance(Command):
                 # Run the playbook
                 env = dict(os.environ)
                 env["ANSIBLE_CONFIG"] = config_fname
-                subprocess.run([
-                    "ansible-playbook", playbook
-                ], check=True, env=env)
+                cmd = ["ansible-playbook", playbook]
+                log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+                subprocess.run(cmd, check=True, env=env)
 
 
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
