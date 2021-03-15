@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 from __future__ import annotations
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import argparse
 import logging
 import subprocess
@@ -11,6 +11,26 @@ import os
 import sys
 import shlex
 import shutil
+
+# Import YAML for parsing only. Prefer pyyaml for loading, because it's
+# significantly faster
+try:
+    import yaml
+
+    def yaml_load(file):
+        return yaml.load(file, Loader=yaml.CLoader)
+except ModuleNotFoundError:
+    try:
+        import ruamel.yaml
+
+        yaml_loader = ruamel.yaml.YAML(typ="safe", pure=True)
+
+        def yaml_load(file):
+            return yaml_loader.load(file)
+    except ModuleNotFoundError:
+        def yaml_load(file):
+            raise NotImplementedError("this feature requires PyYaml or ruamel.yaml")
+
 
 log = logging.getLogger("nspawn-runner")
 
@@ -270,6 +290,94 @@ class Chroot:
                     return playbook
         return None
 
+    def load_config(self, path: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Load the chroot configuration from the playbook/config file, if present
+        """
+        # Parse config file
+        if path is None:
+            path = self.config_file_path()
+        if path is None:
+            return {}
+        with open(path, "rt") as fd:
+            parsed_playbook = yaml_load(fd)
+
+        # Validate the contents to fit what we can work with
+        if not parsed_playbook:
+            log.warning("%s: playbook is empty", path)
+            return {}
+        if not isinstance(parsed_playbook, list):
+            log.warning("%s: playbook is not structured as a YAML list", path)
+            return {}
+        if len(parsed_playbook) > 1:
+            log.warning("%s: playbook has %d records, looking for configuration in the first one only",
+                        path. len(parsed_playbook))
+
+        # Get playbook variables
+        pb_vars = parsed_playbook[0].get("vars")
+        if pb_vars is None:
+            return {}
+
+        # Extract what we need from the variables
+        res: Dict[str, Any] = {}
+        for var in ("chroot_suite",):
+            key = f"nspawn_runner_{var}"
+            if key not in pb_vars:
+                continue
+            res[var] = pb_vars.get(key)
+
+        return res
+
+    def run_playbook(self, pathname=None):
+        """
+        Run this chroot's playbook
+        """
+        if pathname is None:
+            pathname = self.config_file_path()
+
+        if pathname is None:
+            log.warning("%s: playbook not found", self.image_name)
+            return
+
+        with tempfile.TemporaryDirectory() as workdir:
+            # Write the chroot hack script
+            # See https://www.enricozini.org/blog/2021/debian/nspawn-chroot-maintenance
+            chroot_cmd = os.path.join(workdir, "nspawn-chroot")
+            with open(chroot_cmd, "wt") as fd:
+                print('#!/bin/sh', file=fd)
+                print('chroot="$1"', file=fd)
+                print('shift', file=fd)
+                print('exec systemd-nspawn --console=pipe -qD "$chroot" -- "$@"', file=fd)
+                os.fchmod(fd.fileno(), 0o755)
+
+            # Write an ansible configuration
+            inventory_fname = os.path.join(workdir, "hosts")
+            config_fname = os.path.join(workdir, "config.ini")
+            with open(config_fname, "wt") as fd:
+                print("[defaults]", file=fd)
+                print("nocows = 1", file=fd)
+                print(f"inventory = {inventory_fname}", file=fd)
+
+            # Write an ansible inventory for this host only
+            with open(inventory_fname, "wt") as fd:
+                json.dump({
+                    "all": {
+                        "hosts": {
+                            self.chroot_dir: {
+                                "ansible_connection": "chroot",
+                                "ansible_chroot_exe": chroot_cmd,
+                            }
+                        }
+                    }
+                }, fd, indent=1)
+
+            # Run the playbook
+            env = dict(os.environ)
+            env["ANSIBLE_CONFIG"] = config_fname
+            cmd = ["ansible-playbook", pathname]
+            log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+            subprocess.run(cmd, check=True, env=env)
+
 
 class OverlayChroot(Chroot):
     """
@@ -444,17 +552,24 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
     create a chroot that serves as a base for ephemeral machines
     """
     NAME = "chroot-create"
+    FALLBACK_SUITE = "buster"
 
     @classmethod
     def make_subparser(cls, subparsers):
         parser = super().make_subparser(subparsers)
-        parser.add_argument("--suite", action="store", default="buster",
-                            help="debootstrap suite. Default: %(default)s)")
+        parser.add_argument("--suite", action="store",
+                            help=f"debootstrap suite. Default: from chroot config file, or {cls.FALLBACK_SUITE}")
         return parser
 
     def run(self):
         self.chroot.must_not_exist()
-        self.chroot.create(self.args.suite)
+        suite = self.args.suite
+        if suite is None:
+            config = self.chroot.load_config()
+            suite = config.get("chroot_suite")
+        if suite is None:
+            suite = FALLBACK_SUITE
+        self.chroot.create(suite)
 
 
 class ChrootLogin(ChrootMixin, Command):
@@ -490,46 +605,8 @@ class ChrootMaintenance(Command):
             else:
                 log.debug("%s: no config/playbook file found", fn.name)
 
-        with tempfile.TemporaryDirectory() as workdir:
-            # Write the chroot hack script
-            # See https://www.enricozini.org/blog/2021/debian/nspawn-chroot-maintenance
-            chroot_cmd = os.path.join(workdir, "nspawn-chroot")
-            with open(chroot_cmd, "wt") as fd:
-                print('#!/bin/sh', file=fd)
-                print('chroot="$1"', file=fd)
-                print('shift', file=fd)
-                print('exec systemd-nspawn --console=pipe -qD "$chroot" -- "$@"', file=fd)
-                os.fchmod(fd.fileno(), 0o755)
-
-            # Write an ansible configuration
-            inventory_fname = os.path.join(workdir, "hosts")
-            config_fname = os.path.join(workdir, "config.ini")
-            with open(config_fname, "wt") as fd:
-                print("[defaults]", file=fd)
-                print("nocows = 1", file=fd)
-                print(f"inventory = {inventory_fname}", file=fd)
-
-            # Run each playbook on its chroot
-            for chroot, playbook in playbooks:
-                # Write an ansible inventory for this host only
-                with open(inventory_fname, "wt") as fd:
-                    json.dump({
-                        "all": {
-                            "hosts": {
-                                chroot.chroot_dir: {
-                                    "ansible_connection": "chroot",
-                                    "ansible_chroot_exe": chroot_cmd,
-                                }
-                            }
-                        }
-                    }, fd, indent=1)
-
-                # Run the playbook
-                env = dict(os.environ)
-                env["ANSIBLE_CONFIG"] = config_fname
-                cmd = ["ansible-playbook", playbook]
-                log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-                subprocess.run(cmd, check=True, env=env)
+        for chroot, playbook in playbooks:
+            chroot.run_playbook(playbook)
 
 
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
