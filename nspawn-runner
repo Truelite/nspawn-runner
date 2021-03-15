@@ -275,11 +275,17 @@ class Chroot:
         self.image_name = image_name
         self.chroot_dir = os.path.join(nspawn_runner.root_dir, self.image_name)
 
+    def exists(self) -> bool:
+        """
+        Check if the chroot exists
+        """
+        return os.path.isdir(self.chroot_dir)
+
     def must_exist(self):
         """
         Raise Fail if the chroot does not already exist
         """
-        if not os.path.exists(self.chroot_dir):
+        if not self.exists():
             available = sorted(x for x in os.listdir(self.root_dir) if not x.startswith("."))
             raise Fail(f"{self.chroot_dir} does not exist. Use one of {', '.join(available)}")
 
@@ -287,7 +293,7 @@ class Chroot:
         """
         Raise Fail if the chroot does already exists
         """
-        if os.path.exists(self.chroot_dir):
+        if self.exists():
             raise Fail(f"{self.chroot_dir} already exists")
 
     def create(self, suite: str):
@@ -633,6 +639,9 @@ class ChrootMaintenance(Command):
     def run(self):
         chroots = self.nspawn_runner.scan_chroots()
         for chroot in chroots:
+            if not chroot.exists():
+                config = chroot.load_config()
+                chroot.create(config.get("chroot_suite"))
             chroot.run_playbook()
 
 
