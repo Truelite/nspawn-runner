@@ -103,6 +103,28 @@ class NspawnRunner:
         """
         raise NotImplementedError(f"{self.__class__.__name__}.get_chroot not implemented")
 
+    def scan_chroots(self) -> List["Chroot"]:
+        """
+        Enumerate yaml configuration files and subdirectories of
+        ``/var/lib/nspawn-runner/``, merge results, and return the resulting
+        list of Chroot objects
+        """
+        # List chroots in /var/lib/nspawn-runner/
+        # that have a corresponding playbook
+        res = []
+        for fn in os.scandir(self.nspawn_runner.root_dir):
+            if fn.name.startswith("."):
+                continue
+            if not fn.is_dir():
+                continue
+            chroot = self.nspawn_runner.get_chroot(fn.name)
+            playbook = chroot.config_file_path()
+            if playbook is not None:
+                res.append(chroot)
+            else:
+                log.debug("%s: no config/playbook file found", fn.name)
+        return res
+
 
 class Machine:
     """
@@ -598,23 +620,9 @@ class ChrootMaintenance(Command):
     NAME = "chroot-maintenance"
 
     def run(self):
-        # List chroots in /var/lib/nspawn-runner/
-        # that have a corresponding playbook
-        playbooks = []
-        for fn in os.scandir(self.nspawn_runner.root_dir):
-            if fn.name.startswith("."):
-                continue
-            if not fn.is_dir():
-                continue
-            chroot = self.nspawn_runner.get_chroot(fn.name)
-            playbook = chroot.config_file_path()
-            if playbook is not None:
-                playbooks.append((chroot, playbook))
-            else:
-                log.debug("%s: no config/playbook file found", fn.name)
-
-        for chroot, playbook in playbooks:
-            chroot.run_playbook(playbook)
+        chroots = self.nspawn_runner.scan_chroots()
+        for chroot in chroots:
+            chroot.run_playbook()
 
 
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
