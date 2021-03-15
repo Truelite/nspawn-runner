@@ -32,6 +32,8 @@ except ModuleNotFoundError:
             raise NotImplementedError("this feature requires PyYaml or ruamel.yaml")
 
 
+EATMYDATA = shutil.which("eatmydata")
+
 log = logging.getLogger("nspawn-runner")
 
 
@@ -381,8 +383,11 @@ class OverlayChroot(Chroot):
     Chroot implemenation for traditional filesystems
     """
     def create(self, suite: str):
-        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
-               suite, self.chroot_dir]
+        cmd = []
+        if EATMYDATA is not None:
+            cmd.append(EATMYDATA)
+        cmd += ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd,python3",
+                suite, self.chroot_dir]
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
         subprocess.run(cmd, check=True)
 
@@ -397,8 +402,11 @@ class BtrfsChroot(Chroot):
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
         subprocess.run(cmd, check=True)
 
-        cmd = ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd",
-               suite, self.chroot_dir]
+        cmd = []
+        if EATMYDATA is not None:
+            cmd.append(EATMYDATA)
+        cmd += ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd,python3",
+                suite, self.chroot_dir]
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
         subprocess.run(cmd, check=True)
 
