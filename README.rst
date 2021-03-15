@@ -71,6 +71,10 @@ single place. Currently supported are:
 __ https://github.com/Truelite/nspawn-runner/issues/3
 
 * ``nspawn_runner_chroot_suite``: suite to use for debootstrap
+* ``nspawn_runner_maint_recreate``: set to true to always recreate the chroot
+  during maintenance. See `issue #4`__ for details.
+
+__ https://github.com/Truelite/nspawn-runner/issues/4
 
 If ``nspawn-runner chroot-create`` finds a matching playbook, it will get
 creation defaults from it, and run the playbook to customize the chroot after

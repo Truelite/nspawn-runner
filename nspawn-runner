@@ -38,6 +38,15 @@ EATMYDATA = shutil.which("eatmydata")
 log = logging.getLogger("nspawn-runner")
 
 
+def run_cmd(cmd: List[str], **kw) -> subprocess.CompletedProcess:
+    """
+    Run a command, logging it
+    """
+    kw.setdefault("check", True)
+    log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
+    return subprocess.run(cmd, **kw)
+
+
 class Fail(RuntimeError):
     """
     Exception raised when the program should exit with an error but without a
@@ -302,6 +311,12 @@ class Chroot:
         """
         raise NotImplementedError(f"{self.__class__.__name__}.create not implemented")
 
+    def remove(self):
+        """
+        Remove this chroot
+        """
+        shutil.rmtree(self.chroot_dir)
+
     def maintenance_login(self):
         """
         Directly log into the chroot, without an ephemeral layer.
@@ -358,7 +373,7 @@ class Chroot:
 
         # Extract what we need from the variables
         res: Dict[str, Any] = {}
-        for var in ("chroot_suite",):
+        for var in ("chroot_suite", "maint_recreate"):
             key = f"nspawn_runner_{var}"
             if key not in pb_vars:
                 continue
@@ -412,9 +427,19 @@ class Chroot:
             # Run the playbook
             env = dict(os.environ)
             env["ANSIBLE_CONFIG"] = config_fname
-            cmd = ["ansible-playbook", pathname]
-            log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-            subprocess.run(cmd, check=True, env=env)
+            run_cmd(["ansible-playbook", pathname], env=env)
+
+    def run_maintenance(self):
+        """
+        Perform maintenance on this chroot
+        """
+        config = self.load_config()
+        if config.get("maint_recreate") and self.exists():
+            log.info("%s: removing chroot to recreate it during maintenance", self.image_name)
+            self.remove()
+        if not self.exists():
+            self.create(config.get("chroot_suite"))
+        self.run_playbook()
 
 
 class OverlayChroot(Chroot):
@@ -427,8 +452,7 @@ class OverlayChroot(Chroot):
             cmd.append(EATMYDATA)
         cmd += ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd,python3",
                 suite, self.chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        subprocess.run(cmd, check=True)
+        run_cmd(cmd)
 
 
 class BtrfsChroot(Chroot):
@@ -437,17 +461,31 @@ class BtrfsChroot(Chroot):
     """
     def create(self, suite: str):
         # Create subvolume for chroot
-        cmd = ["btrfs", "subvolume", "create", self.chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        subprocess.run(cmd, check=True)
+        run_cmd(["btrfs", "subvolume", "create", self.chroot_dir])
 
         cmd = []
         if EATMYDATA is not None:
             cmd.append(EATMYDATA)
         cmd += ["debootstrap", "--variant=minbase", "--include=git,dbus,systemd,python3",
                 suite, self.chroot_dir]
-        log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
-        subprocess.run(cmd, check=True)
+        run_cmd(cmd)
+
+    def _is_subvolume(self) -> bool:
+        """
+        Check if this chroot is in a subvolume
+        """
+        cmd = ["btrfs", "subvolume", "show", self.chroot_dir]
+        res = subprocess.run(cmd, check=False, capture_output=True, text=True)
+        return res.returncode == 0
+
+    def remove(self):
+        """
+        Remove this chroot
+        """
+        if self._is_subvolume():
+            run_cmd(["btrfs", "subvolume", "delete", self.chroot_dir])
+        else:
+            super().remove()
 
 
 class OverlayRunner(NspawnRunner):
@@ -639,10 +677,7 @@ class ChrootMaintenance(Command):
     def run(self):
         chroots = self.nspawn_runner.scan_chroots()
         for chroot in chroots:
-            if not chroot.exists():
-                config = chroot.load_config()
-                chroot.create(config.get("chroot_suite"))
-            chroot.run_playbook()
+            chroot.run_maintenance()
 
 
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
