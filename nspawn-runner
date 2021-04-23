@@ -682,10 +682,21 @@ class ChrootMaintenance(Command):
     """
     NAME = "chroot-maintenance"
 
+    @classmethod
+    def make_subparser(cls, subparsers):
+        parser = super().make_subparser(subparsers)
+        parser.add_argument("image", action="store", nargs="?",
+                            help="chroot name. Default: taken from $CUSTOM_ENV_CI_JOB_IMAGE")
+        return parser
+
     def run(self):
-        chroots = self.nspawn_runner.scan_chroots()
-        for chroot in chroots:
+        if self.args.image:
+            chroot = self.nspawn_runner.get_chroot(self.args.image)
             chroot.run_maintenance()
+        else:
+            chroots = self.nspawn_runner.scan_chroots()
+            for chroot in chroots:
+                chroot.run_maintenance()
 
 
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
