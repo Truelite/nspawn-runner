@@ -699,6 +699,18 @@ class ChrootMaintenance(Command):
                 chroot.run_maintenance()
 
 
+class ChrootList(Command):
+    """
+    list available chroots
+    """
+    NAME = "chroot-list"
+
+    def run(self):
+        chroots = self.nspawn_runner.scan_chroots()
+        for chroot in chroots:
+            print(chroot.image_name, chroot.chroot_dir)
+
+
 class Prepare(ChrootMixin, SetupMixin, RunMixin, Command):
     """
     start an ephemeral system for a CI run
@@ -786,6 +798,7 @@ def main():
     parser.add_argument("--debug", action="store_true", help="verbose output")
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
 
+    ChrootList.make_subparser(subparsers)
     ChrootCreate.make_subparser(subparsers)
     ChrootLogin.make_subparser(subparsers)
     ChrootMaintenance.make_subparser(subparsers)
