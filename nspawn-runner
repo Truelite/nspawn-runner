@@ -433,12 +433,20 @@ class Chroot:
         """
         Perform maintenance on this chroot
         """
+        if self.config_file_path() is None:
+            log.error("%s: chroot configuration not found", self.image_name)
+            return
+        log.info("%s: running maintenance", self.image_name)
         config = self.load_config()
         if config.get("maint_recreate") and self.exists():
             log.info("%s: removing chroot to recreate it during maintenance", self.image_name)
             self.remove()
         if not self.exists():
-            self.create(config.get("chroot_suite"))
+            suite = config.get("chroot_suite")
+            if suite is None:
+                log.error("%s: chroot_suite not found in playbook, and chroot does not exist", self.image_name)
+                return
+            self.create(suite)
         self.run_playbook()
 
 
