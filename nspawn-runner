@@ -658,7 +658,7 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
             config = self.chroot.load_config()
             suite = config.get("chroot_suite")
         if suite is None:
-            suite = FALLBACK_SUITE
+            suite = self.FALLBACK_SUITE
         self.chroot.create(suite)
         playbook = self.chroot.config_file_path()
         if playbook is not None:
