@@ -295,7 +295,7 @@ class Chroot:
         Raise Fail if the chroot does not already exist
         """
         if not self.exists():
-            available = sorted(x for x in os.listdir(self.root_dir) if not x.startswith("."))
+            available = sorted(x for x in os.listdir(self.chroot_dir) if not x.startswith("."))
             raise Fail(f"{self.chroot_dir} does not exist. Use one of {', '.join(available)}")
 
     def must_not_exist(self):
