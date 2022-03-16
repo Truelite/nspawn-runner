@@ -174,7 +174,7 @@ class Machine:
             'WatchdogSec=3min',
         ]
 
-        systemd_run_cmd = ["systemd-run"]
+        systemd_run_cmd = ["systemd-run", "--setenv=SYSTEMD_SECCOMP=0"]
         for c in unit_config:
             systemd_run_cmd.append(f"--property={c}")
 
