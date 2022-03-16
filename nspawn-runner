@@ -630,7 +630,8 @@ class ChrootMixin:
             image = self.args.default_image
         if image is None:
             raise Fail("Please provide an image name, or set $CUSTOM_ENV_CI_JOB_IMAGE")
-        image = os.path.basename(image)
+        # map docker url to image name, drop the "base:" prefix
+        image = os.path.basename(image).split(":", 2)[-1]
         if image.startswith("."):
             raise Fail("Image names cannot start with '.'")
 
