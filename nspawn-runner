@@ -643,7 +643,7 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
     create a chroot that serves as a base for ephemeral machines
     """
     NAME = "chroot-create"
-    FALLBACK_SUITE = "buster"
+    FALLBACK_SUITE = "unstable"
 
     @classmethod
     def make_subparser(cls, subparsers):
@@ -782,7 +782,7 @@ class Toml(Command):
         print(f'    config_args = ["gitlab-config"]')
         print(f'    config_exec_timeout = 200')
         print(f'    prepare_exec = "{argv0}"')
-        print(f'    prepare_args = ["--verbose", "prepare", "--default-image=buster"]')
+        print(f'    prepare_args = ["--verbose", "prepare", "--default-image=unstable"]')
         print(f'    prepare_exec_timeout = 200')
         print(f'    run_exec = "{argv0}"')
         print(f'    run_args = ["run"]')
