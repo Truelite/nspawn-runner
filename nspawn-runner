@@ -33,6 +33,11 @@ except ModuleNotFoundError:
 
 CONFIG_DIR = "/etc/nspawn-runner"
 
+# Set to True to enable seccomp filtering when running CI jobs. This makes the
+# build slower, but makes sandboxing features available. See "Sandboxing" in
+# https://www.freedesktop.org/software/systemd/man/systemd.exec.html
+ENABLE_SECCOMP = False
+
 EATMYDATA = shutil.which("eatmydata")
 
 log = logging.getLogger("nspawn-runner")
@@ -174,7 +179,9 @@ class Machine:
             'WatchdogSec=3min',
         ]
 
-        systemd_run_cmd = ["systemd-run", "--setenv=SYSTEMD_SECCOMP=0"]
+        systemd_run_cmd = ["systemd-run"]
+        if not ENABLE_SECCOMP:
+            systemd_run_cmd.append("--setenv=SYSTEMD_SECCOMP=0")
         for c in unit_config:
             systemd_run_cmd.append(f"--property={c}")
 
