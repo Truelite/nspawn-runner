@@ -779,32 +779,34 @@ class Toml(Command):
     """
     def run(self):
         argv0 = os.path.abspath(sys.argv[0])
-        print(f'[[runners]]')
-        print(f'  name="nspawn-runner"')
-        print(f'  url="TODO"')
-        print(f'  token="TODO"')
-        print(f'  executor = "custom"')
-        print(f'  builds_dir = "{self.nspawn_runner.gitlab_build_dir}"')
-        print(f'  cache_dir = "{self.nspawn_runner.gitlab_cache_dir}"')
-        print(f'  [runners.custom_build_dir]')
-        print(f'  [runners.cache]')
-        print(f'    [runners.cache.s3]')
-        print(f'    [runners.cache.gcs]')
-        print(f'    [runners.cache.azure]')
-        print(f'  [runners.custom]')
-        print(f'    config_exec = "{argv0}"')
-        print(f'    config_args = ["gitlab-config"]')
-        print(f'    config_exec_timeout = 200')
-        print(f'    prepare_exec = "{argv0}"')
-        print(f'    prepare_args = ["--verbose", "prepare", "--default-image=unstable"]')
-        print(f'    prepare_exec_timeout = 200')
-        print(f'    run_exec = "{argv0}"')
-        print(f'    run_args = ["run"]')
-        print(f'    cleanup_exec = "{argv0}"')
-        print(f'    cleanup_args = ["cleanup"]')
-        print(f'    cleanup_exec_timeout = 200')
-        print(f'    graceful_kill_timeout = 200')
-        print(f'    force_kill_timeout = 200')
+        print(f"""
+[[runners]]
+name="nspawn-runner"
+url="TODO"
+token="TODO"
+executor = "custom"
+builds_dir = "{self.nspawn_runner.gitlab_build_dir}"
+cache_dir = "{self.nspawn_runner.gitlab_cache_dir}"
+[runners.custom_build_dir]
+[runners.cache]
+  [runners.cache.s3]
+  [runners.cache.gcs]
+  [runners.cache.azure]
+[runners.custom]
+  config_exec = "{argv0}"
+  config_args = ["gitlab-config"]
+  config_exec_timeout = 200
+  prepare_exec = "{argv0}"
+  prepare_args = ["--verbose", "prepare", "--default-image=unstable"]
+  prepare_exec_timeout = 200
+  run_exec = "{argv0}"
+  run_args = ["run"]
+  cleanup_exec = "{argv0}"
+  cleanup_args = ["cleanup"]
+  cleanup_exec_timeout = 200
+  graceful_kill_timeout = 200
+  force_kill_timeout = 200
+""".lstrip())
 
 
 def main():
