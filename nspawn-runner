@@ -40,6 +40,17 @@ ENABLE_SECCOMP = False
 
 EATMYDATA = shutil.which("eatmydata")
 
+# See https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html
+
+# If not None, set --property=CPUAccounting=yes and
+# --property=CPUWeight={CPU_WEIGHT} when starting systemd-nspawn
+CPU_WEIGHT = 50
+
+# If not None, set --property=MemoryAccounting=yes and --property=MemoryHigh={MEMORY_HIGH}
+MEMORY_HIGH = "30%"
+# If not None, and MEMORY_HIGH is set, also set --property=MemoryMax={MEMORY_MAX}
+MEMORY_MAX = "40%"
+
 log = logging.getLogger("nspawn-runner")
 
 
@@ -181,6 +192,16 @@ class Machine:
             'WatchdogSec=3min',
         ]
 
+        if CPU_WEIGHT is not None:
+            unit_config.append("CPUAccounting=yes")
+            unit_config.append(f"CPUWeight={CPU_WEIGHT}")
+
+        if MEMORY_HIGH is not None:
+            unit_config.append("MemoryAccounting=yes")
+            unit_config.append("MemoryHigh={MEMORY_HIGH}")
+            if MEMORY_MAX is not None:
+                unit_config.append("MemoryMax={MEMORY_MAX}")
+
         systemd_run_cmd = ["systemd-run"]
         if not ENABLE_SECCOMP:
             systemd_run_cmd.append("--setenv=SYSTEMD_SECCOMP=0")
@@ -201,6 +222,7 @@ class Machine:
             f"--directory={chroot.chroot_dir}",
             f"--machine={self.machine_name}",
             "--boot", "--notify-ready=yes"]
+
         if self.nspawn_runner.systemd_version >= 250:
             res.append("--suppress-sync=yes")
         return res
