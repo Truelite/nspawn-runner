@@ -82,6 +82,8 @@ class NspawnRunner:
         self.root_dir = root_dir
         self.gitlab_build_dir = os.path.join(self.root_dir, ".build")
         self.gitlab_cache_dir = os.path.join(self.root_dir, ".cache")
+        res = subprocess.run(["systemd", "--version"], check=True, capture_output=True, text=True)
+        self.systemd_version = int(res.stdout.splitlines()[0].split()[1])
 
     @classmethod
     def create(cls, root_dir: str):
@@ -190,6 +192,19 @@ class Machine:
         log.info("Running %s", " ".join(shlex.quote(c) for c in systemd_run_cmd))
         os.execvp(systemd_run_cmd[0], systemd_run_cmd)
 
+    def _get_nspawn_command(self, chroot: "Chroot") -> List[str]:
+        """
+        Return the command to use to start systemd-nspawn
+        """
+        res = [
+            "systemd-nspawn", "--quiet",
+            f"--directory={chroot.chroot_dir}",
+            f"--machine={self.machine_name}",
+            "--boot", "--notify-ready=yes"]
+        if self.nspawn_runner.systemd_version >= 250:
+            res.append("--suppress-sync=yes")
+        return res
+
     def start(self, chroot: "Chroot"):
         """
         Start this machine on the given chroot
@@ -233,21 +248,17 @@ class OverlayMachine(Machine):
         super().__init__(*args, **kw)
         self.overlay_dir = os.path.join(self.nspawn_runner.overlays_dir, self.machine_name)
 
+    def _get_nspawn_command(self, chroot: "Chroot") -> List[str]:
+        res = super()._get_nspawn_command(chroot)
+        res.append(f"--overlay={chroot.chroot_dir}:{self.overlay_dir}:/")
+        return res
+
     def start(self, chroot: "Chroot"):
         log.info("Starting machine using image %s", chroot.image_name)
         if os.path.exists(self.overlay_dir):
             raise Fail(f"overlay directory {self.overlay_dir} already exists")
         os.makedirs(self.overlay_dir, exist_ok=True)
-
-        self._run_nspawn(
-            ("systemd-nspawn",
-                "--quiet",
-                f"--directory={chroot.chroot_dir}",
-                f"--overlay={chroot.chroot_dir}:{self.overlay_dir}:/",
-                f"--machine={self.machine_name}",
-                "--boot",
-                "--notify-ready=yes")
-        )
+        self._run_nspawn(self._get_nspawn_command(chroot))
 
     def terminate(self):
         try:
@@ -263,18 +274,14 @@ class BtrfsMachine(Machine):
     """
     Machine implementation for btrfs fileystems
     """
+    def _get_nspawn_command(self, chroot: "Chroot") -> List[str]:
+        res = super()._get_nspawn_command(chroot)
+        res.append("--ephemeral")
+        return res
+
     def start(self, chroot: "Chroot"):
         log.info("Starting machine using image %s", chroot.image_name)
-
-        self._run_nspawn(
-            ("systemd-nspawn",
-                "--quiet",
-                "--ephemeral",
-                f"--directory={chroot.chroot_dir}",
-                f"--machine={self.machine_name}",
-                "--boot",
-                "--notify-ready=yes")
-        )
+        self._run_nspawn(self._get_nspawn_command(chroot))
 
     def terminate(self):
         res = subprocess.run(["machinectl", "terminate", self.machine_name])
