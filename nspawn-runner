@@ -824,11 +824,13 @@ def main():
     Toml.make_subparser(subparsers)
 
     args = parser.parse_args()
-    handler = args.handler(args)
-
-    res = handler.run()
-    if res is not None:
-        sys.exit(res)
+    if not hasattr(args, "handler"):
+        parser.print_help()
+    else:
+        handler = args.handler(args)
+        res = handler.run()
+        if res is not None:
+            sys.exit(res)
 
 
 if __name__ == "__main__":
