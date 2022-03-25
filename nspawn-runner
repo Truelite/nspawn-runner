@@ -51,6 +51,11 @@ MEMORY_HIGH = "30%"
 # If not None, and MEMORY_HIGH is set, also set --property=MemoryMax={MEMORY_MAX}
 MEMORY_MAX = "40%"
 
+# Set to true to use a tempfs overlay for writable storage. This makes CIs much
+# faster, if the machine configuration in terms of ram and swapspace has enough
+# capacity to handle disk space used for builds
+RAMDISK = False
+
 log = logging.getLogger("nspawn-runner")
 
 
@@ -101,6 +106,9 @@ class NspawnRunner:
         """
         Instantiate the right NspawnRunner subclass for this sytem
         """
+        if RAMDISK:
+            return TmpfsRunner(root_dir)
+
         # Detect filesystem type
         res = subprocess.run(
                 ["stat", "-f", "-c", "%T", root_dir],
@@ -299,6 +307,30 @@ class BtrfsMachine(Machine):
     def _get_nspawn_command(self, chroot: "Chroot") -> List[str]:
         res = super()._get_nspawn_command(chroot)
         res.append("--ephemeral")
+        return res
+
+    def start(self, chroot: "Chroot"):
+        log.info("Starting machine using image %s", chroot.image_name)
+        self._run_nspawn(self._get_nspawn_command(chroot))
+
+    def terminate(self):
+        res = subprocess.run(["machinectl", "terminate", self.machine_name])
+        if res.returncode != 0:
+            raise Fail(f"Run script exited with code {res.returncode}")
+
+
+class TmpfsMachine(Machine):
+    """
+    Machine implementation for a readonly root with a tmpfs overlay
+    """
+    def _get_nspawn_command(self, chroot: "Chroot") -> List[str]:
+        res = super()._get_nspawn_command(chroot)
+        res.append("--volatile=overlay")
+        # See https://github.com/Truelite/nspawn-runner/issues/10
+        # According to systemd-nspawn(1), --read-only is implied if --volatile
+        # is used, but it seems that without using --read-only one ostree
+        # remains locked and VMs can only be started once from it.
+        res.append("--read-only")
         return res
 
     def start(self, chroot: "Chroot"):
@@ -532,6 +564,13 @@ class BtrfsChroot(Chroot):
             super().remove()
 
 
+class TmpfsChroot(OverlayChroot):
+    """
+    Chroot implemenation using tmpfs overlay
+    """
+    pass
+
+
 class OverlayRunner(NspawnRunner):
     """
     nspawn-runner implementation that runs on traditional filesystem, using
@@ -561,6 +600,17 @@ class BtrfsRunner(NspawnRunner):
 
     def get_chroot(self, image_name: str) -> "Chroot":
         return BtrfsChroot(self, image_name)
+
+
+class TmpfsRunner(NspawnRunner):
+    """
+    nspawn-runner implementation optimized for btrfs filesystems
+    """
+    def get_machine(self, run_id: str) -> "Machine":
+        return TmpfsMachine(self, run_id)
+
+    def get_chroot(self, image_name: str) -> "Chroot":
+        return TmpfsChroot(self, image_name)
 
 
 #
