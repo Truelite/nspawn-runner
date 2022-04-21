@@ -206,9 +206,9 @@ class Machine:
 
         if MEMORY_HIGH is not None:
             unit_config.append("MemoryAccounting=yes")
-            unit_config.append("MemoryHigh={MEMORY_HIGH}")
+            unit_config.append(f"MemoryHigh={MEMORY_HIGH}")
             if MEMORY_MAX is not None and self.nspawn_runner.systemd_version >= 249:
-                unit_config.append("MemoryMax={MEMORY_MAX}")
+                unit_config.append(f"MemoryMax={MEMORY_MAX}")
 
         systemd_run_cmd = ["systemd-run"]
         if not ENABLE_SECCOMP:
