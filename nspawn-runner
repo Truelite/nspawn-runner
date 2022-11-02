@@ -94,8 +94,8 @@ class NspawnRunner:
 
         # Detect filesystem type
         res = subprocess.run(
-                ["stat", "-f", "-c", "%T", root_dir],
-                check=True, text=True, stdout=subprocess.PIPE)
+            ["stat", "-f", "-c", "%T", root_dir],
+            check=True, text=True, stdout=subprocess.PIPE)
         fstype = res.stdout.strip()
         if fstype == "btrfs":
             return BtrfsRunner(root_dir)
@@ -183,22 +183,28 @@ class Machine:
             'WatchdogSec=3min',
         ]
 
-        if chroot.config.get('cpu_weight') is not None:
+        cpu_weight = chroot.config.get('cpu_weight', 50)
+        if cpu_weight is not None:
+            log.debug('CPU accounting enabled')
             unit_config.append("CPUAccounting=yes")
-            unit_config.append(f"CPUWeight={chroot.config.get('cpu_weight')}")
+            unit_config.append(f"CPUWeight={cpu_weight}")
 
-        if chroot.config.get('memory_high') is not None:
+        memory_high = chroot.config.get('memory_high', '40%')
+        if memory_high is not None:
+            log.debug('Memory accounting enabled (high)')
             if not "MemoryAccounting=yes" in unit_config:
                 unit_config.append("MemoryAccounting=yes")
-            unit_config.append(f"MemoryHigh={chroot.config.get('memory_high')}")
+            unit_config.append(f"MemoryHigh={memory_high}")
 
-        if chroot.config.get('memory_max') is not None and SYSTEMD_VERSION >= 249:
+        memory_max = chroot.config.get('memory_max', '40%')
+        if memory_max is not None and SYSTEMD_VERSION >= 249:
+            log.debug('Memory accounting enabled (max)')
             if not "MemoryAccounting=yes" in unit_config:
                 unit_config.append("MemoryAccounting=yes")
-            unit_config.append(f"MemoryMax={chroot.config.get('memory_max')}")
+            unit_config.append(f"MemoryMax={memory_max}")
 
         systemd_run_cmd = ["systemd-run"]
-        if not chroot.config.get('seccomp'):
+        if not chroot.config.get('seccomp', False):
             systemd_run_cmd.append("--setenv=SYSTEMD_SECCOMP=0")
 
         for c in unit_config:
