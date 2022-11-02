@@ -34,7 +34,7 @@ except ModuleNotFoundError:
             raise NotImplementedError("this feature requires PyYaml or ruamel.yaml")
 
 def systemd_version():
-    res = subprocess.run(["systemd", "--version"], check=True, capture_output=True, text=True)
+    res = subprocess.run(["systemd-nspawn", "--version"], check=True, capture_output=True, text=True)
     return int(res.stdout.splitlines()[0].split()[1])
 
 CONFIG_DIR = "/etc/nspawn-runner"
