@@ -464,7 +464,14 @@ class Chroot:
                 print('#!/bin/sh', file=fd)
                 print('chroot="$1"', file=fd)
                 print('shift', file=fd)
-                print('exec systemd-nspawn --console=pipe -qD "$chroot" -- "$@"', file=fd)
+                print(' '.join([
+                    'exec',
+                    'systemd-nspawn',
+                    '--console=pipe',
+                    '-qD', "$chroot",
+                    shlex.join(self.config.get('args', [])),
+                    '--', '"$@"'
+                ]), file=fd)
                 os.fchmod(fd.fileno(), 0o755)
 
             # Write an ansible configuration
