@@ -12,6 +12,8 @@ import sys
 import shlex
 import shutil
 
+log = logging.getLogger("nspawn-runner")
+
 # Import YAML for parsing only. Prefer pyyaml for loading, because it's
 # significantly faster
 try:
@@ -31,32 +33,15 @@ except ModuleNotFoundError:
         def yaml_load(file):
             raise NotImplementedError("this feature requires PyYaml or ruamel.yaml")
 
+def systemd_version():
+    res = subprocess.run(["systemd-nspawn", "--version"], check=True, capture_output=True, text=True)
+    return int(res.stdout.splitlines()[0].split()[1])
+
 CONFIG_DIR = "/etc/nspawn-runner"
+DATA_DIR = "/var/lib/nspawn-runner"
 
-# Set to True to enable seccomp filtering when running CI jobs. This makes the
-# build slower, but makes sandboxing features available. See "Sandboxing" in
-# https://www.freedesktop.org/software/systemd/man/systemd.exec.html
-ENABLE_SECCOMP = False
-
+SYSTEMD_VERSION = systemd_version()
 EATMYDATA = shutil.which("eatmydata")
-
-# See https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html
-
-# If not None, set --property=CPUAccounting=yes and
-# --property=CPUWeight={CPU_WEIGHT} when starting systemd-nspawn
-CPU_WEIGHT = 50
-
-# If not None, set --property=MemoryAccounting=yes and --property=MemoryHigh={MEMORY_HIGH}
-MEMORY_HIGH = "30%"
-# If not None, and MEMORY_HIGH is set, also set --property=MemoryMax={MEMORY_MAX}
-MEMORY_MAX = "40%"
-
-# Set to true to use a tempfs overlay for writable storage. This makes CIs much
-# faster, if the machine configuration in terms of ram and swapspace has enough
-# capacity to handle disk space used for builds
-RAMDISK = False
-
-log = logging.getLogger("nspawn-runner")
 
 
 def run_cmd(cmd: List[str], **kw) -> subprocess.CompletedProcess:
@@ -98,21 +83,19 @@ class NspawnRunner:
         self.root_dir = root_dir
         self.gitlab_build_dir = os.path.join(self.root_dir, ".build")
         self.gitlab_cache_dir = os.path.join(self.root_dir, ".cache")
-        res = subprocess.run(["systemd", "--version"], check=True, capture_output=True, text=True)
-        self.systemd_version = int(res.stdout.splitlines()[0].split()[1])
 
     @classmethod
-    def create(cls, root_dir: str):
+    def create(cls, root_dir: str, ram_disk: bool):
         """
         Instantiate the right NspawnRunner subclass for this sytem
         """
-        if RAMDISK:
+        if ram_disk:
             return TmpfsRunner(root_dir)
 
         # Detect filesystem type
         res = subprocess.run(
-                ["stat", "-f", "-c", "%T", root_dir],
-                check=True, text=True, stdout=subprocess.PIPE)
+            ["stat", "-f", "-c", "%T", root_dir],
+            check=True, text=True, stdout=subprocess.PIPE)
         fstype = res.stdout.strip()
         if fstype == "btrfs":
             return BtrfsRunner(root_dir)
@@ -181,7 +164,7 @@ class Machine:
         self.run_id = run_id
         self.machine_name = f"run-{self.run_id}"
 
-    def _run_nspawn(self, cmd: List[str]):
+    def _run_nspawn(self, chroot: "Chroot", cmd: List[str]):
         """
         Run the given systemd-nspawn command line, contained into its own unit
         using systemd-run
@@ -200,23 +183,35 @@ class Machine:
             'WatchdogSec=3min',
         ]
 
-        if CPU_WEIGHT is not None:
+        cpu_weight = chroot.config.get('cpu_weight', 50)
+        if cpu_weight is not None:
+            log.debug('CPU accounting enabled')
             unit_config.append("CPUAccounting=yes")
-            unit_config.append(f"CPUWeight={CPU_WEIGHT}")
+            unit_config.append(f"CPUWeight={cpu_weight}")
 
-        if MEMORY_HIGH is not None:
-            unit_config.append("MemoryAccounting=yes")
-            unit_config.append(f"MemoryHigh={MEMORY_HIGH}")
-            if MEMORY_MAX is not None and self.nspawn_runner.systemd_version >= 249:
-                unit_config.append(f"MemoryMax={MEMORY_MAX}")
+        memory_high = chroot.config.get('memory_high', '40%')
+        if memory_high is not None:
+            log.debug('Memory accounting enabled (high)')
+            if not "MemoryAccounting=yes" in unit_config:
+                unit_config.append("MemoryAccounting=yes")
+            unit_config.append(f"MemoryHigh={memory_high}")
+
+        memory_max = chroot.config.get('memory_max', '40%')
+        if memory_max is not None and SYSTEMD_VERSION >= 249:
+            log.debug('Memory accounting enabled (max)')
+            if not "MemoryAccounting=yes" in unit_config:
+                unit_config.append("MemoryAccounting=yes")
+            unit_config.append(f"MemoryMax={memory_max}")
 
         systemd_run_cmd = ["systemd-run"]
-        if not ENABLE_SECCOMP:
+        if not chroot.config.get('seccomp', False):
             systemd_run_cmd.append("--setenv=SYSTEMD_SECCOMP=0")
+
         for c in unit_config:
             systemd_run_cmd.append(f"--property={c}")
 
         systemd_run_cmd.extend(cmd)
+        systemd_run_cmd.extend(chroot.config.get('args', []))
 
         log.info("Running %s", " ".join(shlex.quote(c) for c in systemd_run_cmd))
         os.execvp(systemd_run_cmd[0], systemd_run_cmd)
@@ -231,7 +226,7 @@ class Machine:
             f"--machine={self.machine_name}",
             "--boot", "--notify-ready=yes"]
 
-        if self.nspawn_runner.systemd_version >= 250:
+        if SYSTEMD_VERSION >= 250:
             res.append("--suppress-sync=yes")
         return res
 
@@ -288,7 +283,7 @@ class OverlayMachine(Machine):
         if os.path.exists(self.overlay_dir):
             raise Fail(f"overlay directory {self.overlay_dir} already exists")
         os.makedirs(self.overlay_dir, exist_ok=True)
-        self._run_nspawn(self._get_nspawn_command(chroot))
+        self._run_nspawn(chroot, self._get_nspawn_command(chroot))
 
     def terminate(self):
         try:
@@ -311,7 +306,7 @@ class BtrfsMachine(Machine):
 
     def start(self, chroot: "Chroot"):
         log.info("Starting machine using image %s", chroot.image_name)
-        self._run_nspawn(self._get_nspawn_command(chroot))
+        self._run_nspawn(chroot, self._get_nspawn_command(chroot))
 
     def terminate(self):
         res = subprocess.run(["machinectl", "terminate", self.machine_name])
@@ -335,7 +330,7 @@ class TmpfsMachine(Machine):
 
     def start(self, chroot: "Chroot"):
         log.info("Starting machine using image %s", chroot.image_name)
-        self._run_nspawn(self._get_nspawn_command(chroot))
+        self._run_nspawn(chroot, self._get_nspawn_command(chroot))
 
     def terminate(self):
         res = subprocess.run(["machinectl", "terminate", self.machine_name])
@@ -351,6 +346,7 @@ class Chroot:
         self.nspawn_runner = nspawn_runner
         self.image_name = image_name
         self.chroot_dir = os.path.join(nspawn_runner.root_dir, self.image_name)
+        self.config = self.load_config()
 
     def exists(self) -> bool:
         """
@@ -394,7 +390,7 @@ class Chroot:
         Login is done with exec, so this function, when successful, never
         returns and destroys the calling process
         """
-        cmd = ["systemd-nspawn", "--directory", self.chroot_dir]
+        cmd = ["systemd-nspawn", "--directory", self.chroot_dir] + self.config.get('args', [])
         log.info("Running %s", " ".join(shlex.quote(c) for c in cmd))
         os.execvp(cmd[0], cmd)
 
@@ -441,11 +437,11 @@ class Chroot:
 
         # Extract what we need from the variables
         res: Dict[str, Any] = {}
-        for var in ("chroot_suite", "maint_recreate"):
-            key = f"nspawn_runner_{var}"
-            if key not in pb_vars:
+        prefix = 'nspawn_runner_'
+        for key in pb_vars.keys():
+            if not key.startswith(prefix):
                 continue
-            res[var] = pb_vars.get(key)
+            res[key[len(prefix):]] = pb_vars.get(key)
 
         return res
 
@@ -468,7 +464,14 @@ class Chroot:
                 print('#!/bin/sh', file=fd)
                 print('chroot="$1"', file=fd)
                 print('shift', file=fd)
-                print('exec systemd-nspawn --console=pipe -qD "$chroot" -- "$@"', file=fd)
+                print(' '.join([
+                    'exec',
+                    'systemd-nspawn',
+                    '--console=pipe',
+                    '-qD', "$chroot",
+                    shlex.join(self.config.get('args', [])),
+                    '--', '"$@"'
+                ]), file=fd)
                 os.fchmod(fd.fileno(), 0o755)
 
             # Write an ansible configuration
@@ -505,12 +508,11 @@ class Chroot:
             log.error("%s: chroot configuration not found", self.image_name)
             return
         log.info("%s: running maintenance", self.image_name)
-        config = self.load_config()
-        if config.get("maint_recreate") and self.exists():
+        if self.config.get("maint_recreate") and self.exists():
             log.info("%s: removing chroot to recreate it during maintenance", self.image_name)
             self.remove()
         if not self.exists():
-            suite = config.get("chroot_suite")
+            suite = self.config.get("chroot_suite")
             if suite is None:
                 log.error("%s: chroot_suite not found in playbook, and chroot does not exist", self.image_name)
                 return
@@ -629,7 +631,7 @@ class Command:
     def __init__(self, args):
         self.args = args
         self.setup_logging()
-        self.nspawn_runner = NspawnRunner.create("/var/lib/nspawn-runner")
+        self.nspawn_runner = NspawnRunner.create(DATA_DIR, self.args.ram_disk)
 
     def setup_logging(self):
         # Setup logging
@@ -742,8 +744,7 @@ class ChrootCreate(ChrootMixin, SetupMixin, Command):
         self.chroot.must_not_exist()
         suite = self.args.suite
         if suite is None:
-            config = self.chroot.load_config()
-            suite = config.get("chroot_suite")
+            suite = self.chroot.config.get("chroot_suite")
         if suite is None:
             suite = self.FALLBACK_SUITE
         self.chroot.create(suite)
@@ -885,6 +886,7 @@ def main():
     parser = argparse.ArgumentParser(description="Manage systemd-nspawn machines for CI runs.")
     parser.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     parser.add_argument("--debug", action="store_true", help="verbose output")
+    parser.add_argument("--ram-disk", action = "store_true", help="use ram disks")
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
 
     ChrootList.make_subparser(subparsers)

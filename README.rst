@@ -12,28 +12,30 @@ Usage
 
 Command line summary::
 
-  usage: nspawn-runner [-h] [-v] [--debug]
-                       {chroot-create,chroot-login,prepare,run,cleanup,gitlab-config,toml}
+  usage: nspawn-runner [-h] [-v] [--debug] [--ram-disk]
+                       {chroot-list,chroot-create,chroot-login,chroot-maintenance,prepare,run,cleanup,gitlab-config,toml}
                        ...
-  
+
   Manage systemd-nspawn machines for CI runs.
-  
+
   positional arguments:
-    {chroot-create,chroot-login,prepare,run,cleanup,gitlab-config,toml}
+    {chroot-list,chroot-create,chroot-login,chroot-maintenance,prepare,run,cleanup,gitlab-config,toml}
                           sub-command help
-      chroot-create       create a chroot that serves as a base for ephemeral
-                          machines
+      chroot-list         list available chroots
+      chroot-create       create a chroot that serves as a base for ephemeral machines
       chroot-login        enter the chroot to perform maintenance
+      chroot-maintenance  perform routine maintenance of chroots
       prepare             start an ephemeral system for a CI run
       run                 run a command inside a CI machine
       cleanup             cleanup a CI machine after it's run
       gitlab-config       configuration step for gitlab-runner
       toml                output the toml configuration for the custom runner
-  
-  optional arguments:
+
+  options:
     -h, --help            show this help message and exit
     -v, --verbose         verbose output
     --debug               verbose output
+    --ram-disk            use ram disks
 
 Steps:
 
@@ -73,8 +75,16 @@ __ https://github.com/Truelite/nspawn-runner/issues/3
 * ``nspawn_runner_chroot_suite``: suite to use for debootstrap
 * ``nspawn_runner_maint_recreate``: set to true to always recreate the chroot
   during maintenance. See `issue #4`__ for details.
+* ``nspawn_runner_cpu_weight``: enable CPU accounting and set CPUWeight to this value. Defaults to 50. Set null to disable.
+* ``nspawn_runner_memory_high``: enable memory accounting and set MemoryHigh to this value. Defaults to 30%. Set null to disable.
+* ``nspawn_runner_memory_max``: enable memory accounting and set MemoryMax to this value. Defaults to 40%. Set null to disable.
+* ``nspawn_runner_seccomp``: set to true to enable seccomp filtering. Defaults to false (SYSTEMD_SECCOMP=0) to improve performance.
 
 __ https://github.com/Truelite/nspawn-runner/issues/4
+
+Please refer to the `systemd documentation`__ for more details on resource control.
+
+__ https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html
 
 If ``nspawn-runner chroot-create`` finds a matching playbook, it will get
 creation defaults from it, and run the playbook to customize the chroot after
